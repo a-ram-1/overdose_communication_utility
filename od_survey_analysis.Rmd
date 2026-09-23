@@ -1,0 +1,1334 @@
+---
+title: "Overdose survey analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r importData, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(pheatmap) # for heatmaps
+library(patchwork) # to combine plots
+library(tidyverse)
+library(usmap)
+library(RColorBrewer) # for plot colors
+library(reshape) # to reshape dfs for the dumbbell plots
+library(ggrepel) # to keep labels from overlapping for dumbbell plots
+library(grid) # for heatmaps
+
+```
+
+```{r chloropleth, echo=FALSE, message=FALSE, warning=FALSE}
+# from https://stackoverflow.com/questions/78599492/plotting-old-connecticut-county-regions-in-usmap
+
+CT_counties <- data.frame(county = c("Fairfield",
+                                 "Hartford",
+                                 "Litchfield",
+                                 "Middlesex",
+                                 "New Haven",
+                                 "New London",
+                                 "Tolland",
+                                 "Windham"),
+                      fips = c("09001",
+                               "09003",
+                               "09005",
+                               "09007",
+                               "09009",
+                               "09011",
+                               "09013",
+                               "09015"))
+
+# Figure A -- map of OD rate per capita
+# changing color from https://stackoverflow.com/questions/76139730/coloring-in-ggplot2-for-us-map
+# from 2024 town population estimates from https://portal.ct.gov/dph/health-information-systems--reporting/population/annual-town-and-county-population-for-connecticut
+# with 2024 county OD estimates from https://public.tableau.com/app/profile/heather.clinton/viz/SUDORS_Dashboard_final2/OverdoseDashboard
+
+odcapita <- data.frame(fips = CT_counties$fips, ODCapita = c(1.624253351, 3.048656782, 1.860287122, 2.210301198, 3.164171562, 3.649244901, 1.554847236, 2.365843973))
+
+plot_usmap(data = odcapita, values = "ODCapita",
+           include = c("CT"),
+           labels = TRUE,
+           data_year = 2021, 
+           theme = theme_void(),
+           label_color="white")  + 
+  scale_fill_gradient2(name = "Overdoses per 10000 residents", low = "purple", mid = "white", 
+                       high = "darkgreen") + 
+  theme_void() + ggtitle("2024 fatal opioid-detected overdoses per 10000 residents") 
+
+# Figure B -- map of spike alerts per county
+
+spikealert <- data.frame(fips = CT_counties$fips, SpikeAlertReceipt = c(0.3684, 0.2951, 0.3333, 0.5, 0.4, 0.4706, 0.4118, 0.5625))
+
+plot_usmap(data = spikealert, values = "SpikeAlertReceipt",
+           include = c("CT"),
+           labels = TRUE,
+           data_year = 2021, 
+           theme = theme_void(),
+           label_color="white")  + 
+  scale_fill_gradient2(name = "Proportion of respondents", low = "purple", mid = "white", 
+                       high = "darkgreen") + 
+  theme_void() + ggtitle("Proportion of respondents receiving CT DPH spike alerts per county")
+
+```
+
+```{r preferenceMismatch, echo=FALSE, message=FALSE, warning=FALSE}
+### Preference mismatch-- the most helpful form of communication is not necessarily the most common one
+# from https://stackoverflow.com/questions/34665852/r-how-can-i-make-a-heatmap-out-of-a-simple-matrix
+
+# Out of the people who are finding __ forms of communication most helpful, what do they receive? 
+# I subset the qualtrics by form of communication [a binning applied to the "most helpful" field] and then add up the % of the "most common" for each category
+# going from top of column to bottom -- reorder to be gradient from top to bottom
+
+# from choice %
+prefmismatchchoice <- data.frame(Communication_type = c("Peer information sharing", "Local alerts", "State alerts", "Client information sharing", "Other", "Platform information", "I don't receive information"), Peer_information_sharing = c(0.559,0.450,0.448,0.439,0.429,0.334,0.152), Local_alerts = c(0.1102,0.2125,0.1344,0.122,0.1429,0.0556,0.0303), State_alerts = c(0.097,0.125,0.269,0.098,0.000,0.222,0.030), Client_information_sharing = c(0.1271,0.1125,0.0746,0.195,0,0.0833,0.0606), Other= c(0,0,0,0,0.2857,0,0.0303), Platform_information = c(0.0847,0.1,0.0746,0.1463,0,0.3056,0), Dont_receive_information = c(0.0212,0,0,0,0.1429,0,0.697))
+
+# from response %
+#prefmismatch <- data.frame(Communication_type = c("Peer information sharing", "Local alerts", "State alerts", "Platform information", "I don't receive information", "Client information sharing", "Other"), Peer_information_sharing = c(2.129, 2.572, 1.579, 1, 0.185, 1.8, 0.67), Local_alerts = c(0.4194, 1.2143, 0.4737, 0.1666, 0.037, 0.5, 0.33), State_alerts = c(0.371, 0.714, 0.947, 0.667, 0.037, 0.4, 0), Platform_information = c(0.3226, 0.5714, 0.2632, 0.9167, 0, 0.6, 0), Dont_receive_information = c(0.0806, 0, 0, 0, 0.8519, 0, 0.33), Client_information_sharing = c(0.4839, 0.6429, 0.2632, 0.25, 0.0741, 0.8, 0), Other = c(0, 0, 0, 0, 0.037, 0, 0.67))
+
+# remove non-text columns 
+prefmat <- prefmismatchchoice[,-1]
+rownames(prefmat) <- prefmismatchchoice[,1]
+
+# convert to matrix
+
+prefmat <- as.matrix(prefmat)
+
+# changed colors with this https://stackoverflow.com/questions/71298942/making-a-continuous-color-chart-for-heatmap-using-pheatmap
+
+# choice % 
+pheatmap(prefmat, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("blue", "white", "orange"))(100), display_numbers=T, number_color="black", main="Communication form receipt stratified by \n most helpful form of communication", labels_col = c("Peer information sharing", "Local alerts", "State alerts", "Client information sharing", "Other", "Platform information", "I don't receive information"), fontsize_number = 10, angle_col=315)
+
+# response %
+pheatmap(prefmat, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), display_numbers=T, number_color="black", main="Proportion of respondents receiving communication \n stratified by most helpful form of communication", labels_col = c("Peer information sharing", "Local alerts", "State alerts",  "Platform information", "I don't receive information", "Client information sharing", "Other"), fontsize_number = 10, angle_col=315)
+
+pheatmap(prefmat, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), main="Communication form receipt stratified by \n most helpful form of communication", labels_row = c("Peer information sharing", "Local alerts", "State alerts", "Client information sharing", "Other", "Platform information", "I don't receive information"), angle_col=315)
+```
+
+```{r channelGap, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+#channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Helpful_proportion = c(0.1837, 0.0204, 0.1292, 0.0816, 0.0952, 0.068, 0.4217), Common_proportion = c(0.0577, 0.006, 0.1272, 0.0994, 0.1213, 0.1133, 0.4751))
+
+# using response % 
+channelgap <- data.frame(Communication_type = rev(c("Other", "I don't receive information", "Platform information", "State alerts", "Local alerts", "Client information sharing", "Peer information sharing")),  Common_proportion = rev(c(0.0201, 0.1946, 0.3356,0.4295, 0.4094, 0.3826, 1.604)), Helpful_proportion = rev(c(0.0204, 0.1837, 0.0816, 0.1292, 0.0952, 0.068, 0.4217)))
+
+# get the difference between most helpful and most common
+
+channelgap$Helpful_common_difference <- channelgap$Helpful_proportion - channelgap$Common_proportion 
+
+# remove non-text columns 
+channelmat <- channelgap[,-1]
+rownames(channelmat) <- channelgap[,1]
+
+# convert to matrix
+
+channelmat <- as.matrix(channelmat)
+
+# changed colors with this https://stackoverflow.com/questions/71298942/making-a-continuous-color-chart-for-heatmap-using-pheatmap
+# using the transpose of the matrix because I want "most helpful" to be the rows
+
+pheatmap(channelmat, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), display_numbers=T, number_color = "yellow", main="Gaps in receipt v. helpfulness of \n overdose communication approaches", fontsize_number = 10, angle_col=315, labels_col = c("Proportion receiving", "Proportion most helpful", "Receipt - helpfulness"))
+
+pheatmap(channelmat, cluster_rows = FALSE, cluster_cols = FALSE, main="Gaps in receipt v. helpfulness of \n overdose communication approaches", color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), angle_col=315, labels_col = c("Proportion receiving", "Proportion most helpful", "Receipt - helpfulness"))
+```
+
+```{r channelGapDumbbell, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+# changing it to % because it's more interpretable
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(0.0577, 0.006, 0.1272, 0.0994, 0.1213, 0.1133, 0.4751)*100, Helpful_proportion = c(0.1837, 0.0204, 0.1292, 0.0816, 0.0952, 0.068, 0.4217)*100)
+
+# using response % 
+# channelgap <- data.frame(Communication_type = rev(c("Other", "I don't receive information", "Platform information", "State alerts", "Local alerts", "Client information sharing", "Peer information sharing")),  Common_proportion = rev(c(0.0201, 0.1946, 0.3356,0.4295, 0.4094, 0.3826, 1.604)), Helpful_proportion = rev(c(0.0204, 0.1837, 0.0816, 0.1292, 0.0952, 0.068, 0.4217)))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi <- channelgap
+channelgappmi$PMI <- channelgappmi$Helpful_proportion - channelgappmi$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for all respondents") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+channelgappmi %>%
+  arrange(desc(PMI))
+
+```
+
+
+```{r channelGapDumbbellMismatch, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+# changing it to % because it's more interpretable
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(5.71,0,10,10,12.86,10,51.44), Helpful_proportion = c(15.38,3.85,11.54,3.85,11.55,7.69,46.15))
+
+# using response % 
+# channelgap <- data.frame(Communication_type = rev(c("Other", "I don't receive information", "Platform information", "State alerts", "Local alerts", "Client information sharing", "Peer information sharing")),  Common_proportion = rev(c(0.0201, 0.1946, 0.3356,0.4295, 0.4094, 0.3826, 1.604)), Helpful_proportion = rev(c(0.0204, 0.1837, 0.0816, 0.1292, 0.0952, 0.068, 0.4217)))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_mismatch <- channelgap
+channelgappmi_mismatch$PMI <- channelgappmi_mismatch$Helpful_proportion - channelgappmi_mismatch$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for respondents who do not receive their 'most helpful' choice") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+channelgappmi_mismatch %>%
+  arrange(desc(PMI))
+
+
+```
+
+
+```{r channelGapDumbbellNoMismatch, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+# changing it to % because it's more interpretable
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(5.77,0.69,13.17,9.93,12.01,11.55,46.88), Helpful_proportion = c(19.01,1.65,13.22,9.09,9.1,6.61,41.33))
+
+# using response % 
+# channelgap <- data.frame(Communication_type = rev(c("Other", "I don't receive information", "Platform information", "State alerts", "Local alerts", "Client information sharing", "Peer information sharing")),  Common_proportion = rev(c(0.0201, 0.1946, 0.3356,0.4295, 0.4094, 0.3826, 1.604)), Helpful_proportion = rev(c(0.0204, 0.1837, 0.0816, 0.1292, 0.0952, 0.068, 0.4217)))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_nomismatch <- channelgap
+channelgappmi_nomismatch$PMI <- channelgappmi_nomismatch$Helpful_proportion - channelgappmi_nomismatch$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for respondents who receive their 'most helpful' choice") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+channelgappmi_nomismatch %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapFirstResponder, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(14.94, 1.15, 10.91, 8.05, 10.34, 9.2, 45.39), Helpful_proportion = c(32, 2.67, 8, 5.33, 6.66, 2.67, 42.66))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_ems <- channelgap
+channelgappmi_ems$PMI <- channelgappmi_ems$Helpful_proportion - channelgappmi_ems$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for first responders") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+channelgappmi_ems %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapGovt, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(1.27, 0, 18.98, 16.46, 8.86, 5.06, 49.37), Helpful_proportion = c(9.09, 0, 9.1, 27.27, 4.55, 4.55, 45.47))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_govt <- channelgap
+channelgappmi_govt$PMI <- channelgappmi_govt$Helpful_proportion - channelgappmi_govt$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for government/health districts") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+channelgappmi_govt %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapSSP, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(0.8, 0.4, 12, 9.2, 14.4, 14.8, 48.4), Helpful_proportion = c(2, 2, 22, 4, 16, 14, 40))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_ssp <- channelgap
+channelgappmi_ssp$PMI <- channelgappmi_ssp$Helpful_proportion - channelgappmi_ssp$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for SSPs/substance use treatment programs") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_ssp %>%
+  arrange(desc(PMI))
+```
+
+```{r channelGapOther, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(3.77, 1.89, 11.32, 11.32, 9.44, 13.21, 49.06), Helpful_proportion = c(16.67, 5.56, 0, 0, 11.12, 5.56, 61.12))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_misc <- channelgap
+channelgappmi_misc$PMI <- channelgappmi_misc$Helpful_proportion - channelgappmi_misc$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for miscellaneous jobs") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_misc %>%
+  arrange(desc(PMI))
+
+```
+
+
+```{r channelGapDPH, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(0.8, 0.4, 15.6, 9.6, 14.4, 11.2, 48), Helpful_proportion = c(3.7, 1.85, 22.22, 14.81, 7.41, 11.11, 38.89))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_dph <- channelgap
+channelgappmi_dph$PMI <- channelgappmi_dph$Helpful_proportion - channelgappmi_dph$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for DPH-funded organizations") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_dph %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapDMHAS, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(0.97, 0.48, 12.56, 10.14, 13.05, 13.53, 49.28), Helpful_proportion = c(2.27, 2.27, 18.18, 6.82, 11.37, 9.09, 50))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_dmhas <- channelgap
+channelgappmi_dmhas$PMI <- channelgappmi_dmhas$Helpful_proportion - channelgappmi_dmhas$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for DMHAS-funded organizations") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_dmhas %>%
+  arrange(desc(PMI))
+
+```
+
+
+```{r channelGapOtherFunding, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(1.05, 0.53, 12.1, 13.16, 12.63, 12.63, 47.9), Helpful_proportion = c(7.14, 2.38, 9.52, 9.52, 14.28, 11.9, 45.23))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_otherfunding <- channelgap
+channelgappmi_otherfunding$PMI <- channelgappmi_otherfunding$Helpful_proportion - channelgappmi_otherfunding$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for organizations without state funding") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_otherfunding %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapNoFunding, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(19.05, 0.95, 11.43, 7.62, 10.47, 7.62, 42.66), Helpful_proportion = c(38.3, 2.13, 6.38, 4.26, 10.64, 2.13, 36.18))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_none <- channelgap
+channelgappmi_none$PMI <- channelgappmi_none$Helpful_proportion - channelgappmi_none$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for organizations with no funding") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_none %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapHartford, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(13.5, 0.61, 12.88, 7.98, 9.2, 11.04, 44.77), Helpful_proportion = c(29.51, 3.28, 11.48, 4.92, 4.92, 4.92, 40.99))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_hartford <- channelgap
+channelgappmi_hartford$PMI <- channelgappmi_hartford$Helpful_proportion - channelgappmi_hartford$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for Hartford County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_hartford %>%
+  arrange(desc(PMI))
+
+```
+
+
+```{r channelGapNLC, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(1.39, 0, 13.19, 12.5, 10.42, 13.19, 49.31), Helpful_proportion = c(8.82, 0, 5.88, 14.71, 5.88, 8.82, 55.88))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_nlc <- channelgap
+channelgappmi_nlc$PMI <- channelgappmi_nlc$Helpful_proportion - channelgappmi_nlc$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for New London County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_nlc %>%
+  arrange(desc(PMI))
+
+```
+```{r channelGapMiddlesex, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(1.69, 0, 14.4, 11.02, 11.01, 12.71, 49.14), Helpful_proportion = c(6.67, 0, 13.33, 6.67, 6.67, 10, 56.66))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_middlesex <- channelgap
+channelgappmi_middlesex$PMI <- channelgappmi_middlesex$Helpful_proportion - channelgappmi_middlesex$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for Middlesex County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_middlesex %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapLitchfield, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(9.52, 2.38, 10.71, 7.14, 10.71, 9.52, 49.99), Helpful_proportion = c(25, 8.33, 4.17, 0, 8.34, 4.17, 50))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_litchfield <- channelgap
+channelgappmi_litchfield$PMI <- channelgappmi_litchfield$Helpful_proportion - channelgappmi_litchfield$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for Litchfield County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_litchfield %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapWindham, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(0, 0, 15.72, 11.43, 11.43, 15.71, 45.72), Helpful_proportion = c(0, 0, 18.75, 0, 6.25, 6.25, 68.75))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_windham <- channelgap
+channelgappmi_windham$PMI <- channelgappmi_windham$Helpful_proportion - channelgappmi_windham$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for Windham County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_windham %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapTolland, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(4.84, 0, 12.9, 9.68, 8.06, 11.29, 53.24), Helpful_proportion = c(17.65, 0, 5.88, 0, 5.88, 5.88, 64.7))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_tolland <- channelgap
+channelgappmi_tolland$PMI <- channelgappmi_tolland$Helpful_proportion - channelgappmi_tolland$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for Tolland County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_tolland %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapNHV, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(7.98, 0.53, 13.83, 7.98, 13.83, 11.7, 44.16), Helpful_proportion = c(28.3, 1.89, 9.43, 5.66, 11.33, 7.55, 35.86))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_nhv <- channelgap
+channelgappmi_nhv$PMI <- channelgappmi_nhv$Helpful_proportion - channelgappmi_nhv$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for New Haven County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_nhv %>%
+  arrange(desc(PMI))
+
+```
+
+```{r channelGapFairfield, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Channel gap
+
+# I add up the % common and % most helpful for each of the communication categories. The last row is most helpful - most common, and I have the rows ordered from largest to smallest difference in the last column
+
+# dataframe using choice % for most common
+
+channelgap <- data.frame(Communication_type = c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"), Common_proportion = c(5.26, 1.5, 12.03, 9.02, 9.77, 13.53, 48.87), Helpful_proportion = c(13.16, 2.63, 13.16, 2.63, 10.52, 7.89, 49.99))
+
+# get the difference between most helpful and most common
+
+#channelgap$Helpful_common_difference <- channelgap$Common_proportion - channelgap$Helpful_proportion 
+
+# make a copy of channelgap that isn't turned into a long format, so I can get pref mismatch index
+channelgappmi_fairfield <- channelgap
+channelgappmi_fairfield$PMI <- channelgappmi_fairfield$Helpful_proportion - channelgappmi_fairfield$Common_proportion
+
+# reshape channel gap into long format [recommended for dumbbell], from https://r-charts.com/distribution/dumbbell-plot-ggplot2/
+
+channelgap <- melt(channelgap, id.vars = "Communication_type")
+
+# order the rows, I guess this is useful for the dumbbell plot?
+channelgap <- channelgap[order(channelgap$Communication_type), ]
+
+
+# create dumbbell plot
+# text repel from https://stackoverflow.com/questions/40542685/how-to-jitter-remove-overlap-for-geom-text-labels, otherwise the labels overlap
+# changing legend text size from https://stackoverflow.com/questions/20407773/increase-legend-font-size-ggplot2
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# aes(x = value, y = reorder(Communication_type, value, FUN=max))) or FUN=min if you want to reorder the rows
+
+ggplot(channelgap, aes(x = value, y = Communication_type)) +
+  geom_line() +
+  geom_point(aes(color = variable), size = 4) +
+  geom_text_repel(aes(x = channelgap$value, 
+                      y = channelgap$Communication_type, 
+                      label = round(channelgap$value, 1)), size = 3.5)+
+  theme_light() + 
+  theme(axis.text=element_text(size=10),
+        axis.title=element_text(size=13),
+        legend.position = "right", legend.text=element_text(size=10), 
+        plot.title = element_text(size = 14, face = "bold", hjust=0.5))+
+  xlab("Percent") +
+  ylab("Communication type") + 
+  ggtitle("Communication form helpfulness v. receipt \n for Fairfield County") + 
+  scale_color_manual("Values", labels = c("Percent received", "Percent most helpful"), values = c("blue", "red"))
+
+
+channelgappmi_fairfield %>%
+  arrange(desc(PMI))
+
+```
+
+
+
+```{r PMIHeatmaps, echo=FALSE, message=FALSE, warning=FALSE}
+# creating heatmaps for preference mismatch index for counties, jobs and funding
+# from https://stackoverflow.com/questions/59232492/how-to-use-r-to-select-the-same-column-from-every-element-in-a-list-into-one-col
+
+# each of these constituent dfs has the same "PMI" column, so I'm pulling that out and placing it in the same df
+# RUN ALL CHUNKS ABOVE BEFORE RUNNING THIS CHUNK
+
+### funding df
+
+funding <- list(channelgappmi_dph, channelgappmi_dmhas, channelgappmi_otherfunding, channelgappmi_none)
+
+# create data frames with the PMI, rename columns to be descriptive
+fundingpmi <- do.call(cbind, lapply(funding, `[`, 'PMI'))
+colnames(fundingpmi) <- c("DPH funding", "DMHAS funding", "Other funding", "No funding")
+
+# oops ... I should reverse the order of the rows since that'll make more sense visually 
+# from https://stackoverflow.com/questions/39975317/how-to-reverse-the-order-of-a-dataframe-in-r
+fundingpmi<- fundingpmi %>% map_df(rev)
+
+# need to convert back to dataframe from a tibble so I can set row names
+fundingpmi <- as.data.frame(fundingpmi)
+
+row.names(fundingpmi) <- rev(c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"))
+
+fundingpmi
+
+### jobs df
+
+jobs <- list(channelgappmi_ssp, channelgappmi_govt, channelgappmi_ems, channelgappmi_misc)
+
+# create data frames with the PMI, rename columns to be descriptive
+jobpmi <- do.call(cbind, lapply(jobs, `[`, 'PMI'))
+colnames(jobpmi) <- c("SSPs and substance use treatment", "Government and health district", "First responders", "Miscellaneous")
+
+# oops ... I should reverse the order of the rows since that'll make more sense visually 
+# from https://stackoverflow.com/questions/39975317/how-to-reverse-the-order-of-a-dataframe-in-r
+jobpmi<- jobpmi %>% map_df(rev)
+
+# need to convert back to dataframe from a tibble so I can set row names
+jobpmi <- as.data.frame(jobpmi)
+
+row.names(jobpmi) <- rev(c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"))
+
+jobpmi
+
+### county df
+
+counties <- list(channelgappmi_hartford, channelgappmi_nhv, channelgappmi_fairfield, channelgappmi_nlc, channelgappmi_litchfield, channelgappmi_middlesex, channelgappmi_tolland, channelgappmi_windham)
+
+# create data frames with the PMI, rename columns to be descriptive
+countypmi <- do.call(cbind, lapply(counties, `[`, 'PMI'))
+colnames(countypmi) <- c("Hartford county", "New Haven County", "Fairfield County", "New London County", "Litchfield County", "Middlesex County", "Tolland County", "Windham County")
+
+# oops ... I should reverse the order of the rows since that'll make more sense visually 
+# from https://stackoverflow.com/questions/39975317/how-to-reverse-the-order-of-a-dataframe-in-r
+countypmi<- countypmi %>% map_df(rev)
+
+# need to convert back to dataframe from a tibble so I can set row names
+countypmi <- as.data.frame(countypmi)
+
+row.names(countypmi) <- rev(c("I don't receive information", "Other", "State alerts", "Platform information", "Local alerts", "Client information sharing", "Peer information sharing"))
+
+countypmi
+
+# create heatmaps for each PMI dataframe
+
+# convert to matrix
+
+fundingpmi <- as.matrix(fundingpmi)
+jobpmi <- as.matrix(jobpmi)
+countypmi <- as.matrix(countypmi)
+
+
+# changed colors with this https://stackoverflow.com/questions/71298942/making-a-continuous-color-chart-for-heatmap-using-pheatmap
+
+pheatmap(fundingpmi, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), display_numbers=T, number_color="white", main="Preference-receipt mismatch index by funding source", fontsize_number = 10, angle_col=315)
+
+pheatmap(jobpmi, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), display_numbers=T, number_color="white", main="Preference-receipt mismatch index by job", fontsize_number = 10, angle_col=315)
+
+pheatmap(countypmi, cluster_rows = FALSE, cluster_cols = FALSE, color = colorRampPalette(c("darkorchid4", "white", "darkgreen"))(100), display_numbers=T, number_color="white", main="Preference-receipt mismatch index by county", fontsize_number = 10, angle_col=315)
+
+```
+
+
+
+```{r actionByRole, echo=FALSE, message=FALSE, warning=FALSE}
+# action by role
+#
+
+# from https://r-graph-gallery.com/48-grouped-barplot-with-ggplot2.html
+
+Job <- c(rep("First responder", 6), rep("SSPs and substance use treatment", 6), rep("Government and health district", 6), rep("Other", 6)) # job
+OD_response <- c(rep(c("Outreach to PWUD", "Informing the public", "Clinical and operational changes", "Surveillance and investigation", "My organization does not respond to ODs", "Other"), 4)) # OD response
+Percent <- c(11.03+10.34+8.97+6.9,11.03+7.59, 15.17+4.14, 4.14+8.97, 1.38, 10.34, 16.97+15.13+15.5+7.75, 11.44+9.23, 4.06+4.8, 7.01+6.27, 0.37, 1.48, 12.09+6.59+12.09+5.49, 18.68+15.38, 5.49+4.4, 7.69+6.59, 1.1, 4.4, 13.04+13.04+15.22+4.35, 13.04+13.04, 4.35+4.35, 2.17+2.17, 8.7, 6.52)# % of people
+
+# only show a label if the value is big enough, from https://stackoverflow.com/questions/71247914/staggering-labels-or-adding-only-selected-labels-on-ggplot-stacked-bar-chart
+Labels = ifelse(Percent > 4, paste0(sprintf("%.0f", Percent), "%"), "")
+actionbyrole <- data.frame(Job, OD_response, Percent, Labels)
+
+# changing color from https://www.geeksforgeeks.org/r-language/change-color-of-bars-in-barchart-using-ggplot2-in-r/
+# colorblind safe colors from https://stackoverflow.com/questions/57153428/r-plot-color-combinations-that-are-colorblind-accessible
+# ordering the jobs from largest to smallest from https://stackoverflow.com/questions/12774210/how-do-you-specifically-order-ggplot2-x-axis-instead-of-alphabetical-order
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+# got the labels using https://stackoverflow.com/questions/66631575/ggplot-stacked-bar-plot-with-percentage-labels
+# got labels to show up properly with https://stackoverflow.com/questions/77891070/stacked-barplot-in-ggplot2-not-displaying-correct-values
+
+ggplot(actionbyrole, aes(fill=OD_response, y=Percent, x=factor(Job, level=c("SSPs and substance use treatment", "First responder", "Government and health district", "Other")))) + 
+    geom_bar(position="stack", stat="identity") + theme_light() + scale_fill_manual(values=c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499")) + scale_x_discrete(guide = guide_axis(angle = -45)) + xlab("Job") + ggtitle("Overdose response by job category") +geom_text(aes(label = Labels), position = position_stack(vjust = 0.5), size = 2.5, color = "black") + theme(plot.title = element_text(hjust = 0.5)) + ylab("Percent of choices") + labs(fill="Reported overdose response")
+
+
+```
+
+
+
+```{r DPHAlertReceipt, echo=FALSE, message=FALSE, warning=FALSE}
+
+### creating a grouped bar plot for who receives DPH alerts
+
+
+Job <- c(rep("First responder", 7), rep("SSPs and substance use treatment", 7), rep("Government and health district", 7), rep("Other", 7)) # job
+Receipt <- c(rep(c("Leadership", "Client-facing staff", "First responders", "Harm reduction van workers", "Other staff", "I am not sure", "Organization doesn't receive information"), 4)) # who receives the DPH alerts
+Percent <- c(28.6, 2, 37.8, 3.1, 6.1, 21.4, 1, 27.1, 16.5, 12.9, 27.8, 12, 3.1, 0.8, 39.5, 2.3, 13.9, 14, 16.3, 12, 2.3, 25.7, 11.4, 7.4, 14.3, 11.4, 17.1, 8.6)# % of people
+dphreceipt <- data.frame(Job, Receipt, Percent)
+
+# changing color from https://www.geeksforgeeks.org/r-language/change-color-of-bars-in-barchart-using-ggplot2-in-r/
+# colorblind safe colors from https://stackoverflow.com/questions/57153428/r-plot-color-combinations-that-are-colorblind-accessible
+# ordering the jobs from largest to smallest from https://stackoverflow.com/questions/12774210/how-do-you-specifically-order-ggplot2-x-axis-instead-of-alphabetical-order
+# changing legend title from https://stackoverflow.com/questions/14622421/how-to-change-legend-title-in-ggplot
+
+ggplot(dphreceipt, aes(fill=Receipt, y=Percent, x=factor(Job, level=c("SSPs and substance use treatment", "First responder", "Government and health district", "Other")))) + 
+    geom_bar(position="dodge", stat="identity") + theme_light() + scale_fill_manual(values=c("#CC79A7", "#E69F00", "#56B4E9",  "#F0E442", "#0072B2", "#000000",  "#999999")) + scale_x_discrete(guide = guide_axis(angle = -25)) + xlab("Job") + geom_text(aes(label = Percent), position = position_dodge(width = .9), stat = "identity", vjust = -0.2, hjust=0.1, colour = "black", size = 2.1, angle=30) + ggtitle("CT DPH ODMAP spike alert receipt by job category") + theme(plot.title = element_text(hjust = 0.5)) + ylab("Percent of choices") + labs(fill="Who receives the alerts")
+
+
+```
+
+
